@@ -4,6 +4,7 @@ package range2cidr
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math/big"
 	"net/netip"
 )
@@ -72,13 +73,13 @@ func Deaggregate(ipLo, ipHi netip.Addr) ([]netip.Prefix, error) {
 }
 
 // Expects ipLo & ipHi to be slices of the same size, where ipLo <= ipHi.
-func splitIntoCidrs(ipLo, ipHi []byte) (RET []netip.Prefix) {
+func splitIntoCidrs(bsIpLo, bsIpHi []byte) (RET []netip.Prefix) {
 
 	NI := big.NewInt
 
-	bigLo := NI(0).SetBytes(ipLo)
-	bigHi := NI(0).SetBytes(ipHi)
-	nBytes := len(ipLo)
+	bigLo := NI(0).SetBytes(bsIpLo)
+	bigHi := NI(0).SetBytes(bsIpHi)
+	nBytes := len(bsIpLo)
 	nBits := nBytes * 8
 
 	// bigLo <= bigHi
@@ -104,14 +105,10 @@ func splitIntoCidrs(ipLo, ipHi []byte) (RET []netip.Prefix) {
 			nStep += 1
 		}
 
-		// filling because math/big only uses as many bytes as necessary
-		// while netip.Addr has expectations
-		bsBaseIp := make([]byte, nBytes)
-
-		// TODO: verify that this is endian-safe
-		bigLo.FillBytes(bsBaseIp)
-
-		addr, ok := netip.AddrFromSlice(bsBaseIp)
+		// convert calculated base addr back into a netip.Addr,
+		// re-using low address slice as an intermediary
+		bigLo.FillBytes(bsIpLo)
+		addr, ok := netip.AddrFromSlice(bsIpLo)
 		if ok {
 			prfx := netip.PrefixFrom(addr, nBits-nStep)
 			RET = append(RET, prfx)
@@ -121,6 +118,41 @@ func splitIntoCidrs(ipLo, ipHi []byte) (RET []netip.Prefix) {
 	}
 
 	return
+}
+
+func V4ToUint32(ipaddr netip.Addr) (uint32, bool) {
+	if ipaddr.Is4In6() {
+		ipaddr = ipaddr.Unmap()
+	}
+	if !ipaddr.Is4() {
+		return 0, false
+	}
+	bsV4 := ipaddr.As4()
+	return binary.BigEndian.Uint32(bsV4[:]), true
+}
+
+func Uint32ToV4(n32 uint32) netip.Addr {
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], n32)
+	return netip.AddrFrom4(tmp)
+}
+
+func V6ToBig(v6addr netip.Addr) *big.Int {
+	if !v6addr.Is6() {
+		return nil
+	}
+	v := big.Int{}
+	bsV6 := v6addr.As16()
+	return v.SetBytes(bsV6[:])
+}
+
+func BigToV6(nBig *big.Int) netip.Addr {
+	if nBig == nil {
+		return netip.Addr{}
+	}
+	var tmp [16]byte
+	nBig.FillBytes(tmp[:])
+	return netip.AddrFrom16(tmp)
 }
 
 /*

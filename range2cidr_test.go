@@ -196,15 +196,14 @@ func TestDeaggregate(t *testing.T) {
 
 		if reflect.DeepEqual(RET, EXP) {
 
-			fmt.Println("\x1b[92;40mSUCCESS!\x1b[0m")
-
 			for ix := range RET {
 				fmt.Printf("\t%s\n", RET[ix].String())
 			}
+			fmt.Println(cmsg(true, "SUCCESS!"))
 
 		} else {
 
-			t.Log("\x1b[91;40mMISMATCH!\x1b[0m")
+			t.Log(cmsg(false, "MISMATCH!"))
 
 			le, lr := len(EXP), len(RET)
 			max := le
@@ -228,7 +227,81 @@ func TestDeaggregate(t *testing.T) {
 
 				t.Logf(SZ_FMT, sE, sR)
 			}
-			t.Fail()
+			t.FailNow()
 		}
 	}
+}
+
+func TestV4Conv(t *testing.T) {
+
+	s := []string{
+		"127.0.0.1",
+		"192.168.1.0",
+		"0.0.0.0",
+		"255.255.255.255",
+	}
+
+	ip := make([]netip.Addr, len(s))
+
+	for ix := range s {
+		ip[ix] = netip.MustParseAddr(s[ix])
+	}
+
+	fmt.Println("IPv4 Conversions")
+	for _, val := range ip {
+
+		n, ok := V4ToUint32(val)
+		val2 := Uint32ToV4(n)
+		fmt.Println("\t", val.String(), n, ok, val2.String())
+
+		if !ok {
+			t.Log(cmsg(false, "V4ToUint32 Failure"))
+			t.FailNow()
+		}
+
+		if val != val2 {
+			t.Log(cmsg(false, "V4To/FromUint32 Mismatch"))
+			t.FailNow()
+		}
+	}
+	fmt.Println(cmsg(true, "SUCCESS!"))
+}
+
+func TestV6Conv(t *testing.T) {
+
+	s := []string{
+		"2606:cb00::",
+		"2620:0:c70::",
+		"2620:12b:8000::",
+	}
+
+	ip := make([]netip.Addr, len(s))
+
+	for ix := range s {
+		ip[ix] = netip.MustParseAddr(s[ix])
+	}
+
+	fmt.Println("IPv6 Conversions")
+	for _, val := range ip {
+
+		n := V6ToBig(val)
+		val2 := BigToV6(n)
+		fmt.Println("\t", val.String(), n, val2.String())
+
+		if val != val2 {
+			t.Log(cmsg(false, "V6To/FromBig Mismatch"))
+			t.FailNow()
+		}
+	}
+	fmt.Println(cmsg(true, "SUCCESS!"))
+}
+
+func cmsg(bOk bool, v string) string {
+	var pfx string
+	if bOk {
+		pfx = "\x1b[92m"
+	} else {
+		pfx = "\x1b[91m"
+	}
+	return pfx + v + "\x1b[0m"
 }
