@@ -284,7 +284,7 @@ func TestV6Conv(t *testing.T) {
 	fmt.Println("IPv6 Conversions")
 	for _, val := range ip {
 
-		n := V6ToBig(val)
+		n := ToBig(val)
 		val2 := BigToV6(n)
 		fmt.Println("\t", val.String(), n, val2.String())
 

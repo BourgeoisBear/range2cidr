@@ -137,13 +137,17 @@ func Uint32ToV4(n32 uint32) netip.Addr {
 	return netip.AddrFrom4(tmp)
 }
 
-func V6ToBig(v6addr netip.Addr) *big.Int {
-	if !v6addr.Is6() {
+func ToBig(addr netip.Addr) *big.Int {
+	var v big.Int
+	if addr.Is4() {
+		bs := addr.As4()
+		return v.SetBytes(bs[:])
+	} else if addr.Is6() {
+		bs := addr.As16()
+		return v.SetBytes(bs[:])
+	} else {
 		return nil
 	}
-	v := big.Int{}
-	bsV6 := v6addr.As16()
-	return v.SetBytes(bsV6[:])
 }
 
 func BigToV6(nBig *big.Int) netip.Addr {
@@ -153,6 +157,15 @@ func BigToV6(nBig *big.Int) netip.Addr {
 	var tmp [16]byte
 	nBig.FillBytes(tmp[:])
 	return netip.AddrFrom16(tmp)
+}
+
+func BigToV4(nBig *big.Int) netip.Addr {
+	if nBig == nil {
+		return netip.Addr{}
+	}
+	var tmp [4]byte
+	nBig.FillBytes(tmp[:])
+	return netip.AddrFrom4(tmp)
 }
 
 /*
