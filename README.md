@@ -1,6 +1,6 @@
 # range2cidr
 
-[![GoDoc](https://img.shields.io/badge/pkg.go.dev-doc-blue)](http://pkg.go.dev/.)
+[![GoDoc](https://img.shields.io/badge/pkg.go.dev-doc-blue)](https://pkg.go.dev/github.com/BourgeoisBear/range2cidr)
 
 Aggregate() merges a list of IP ranges into a minimal set of covering ranges.
 
