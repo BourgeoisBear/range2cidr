@@ -232,7 +232,11 @@ func TestAggregate(t *testing.T) {
 	for i := range sPfxIn {
 		sRng[i] = RangeFromPrefix(sPfxIn[i])
 	}
-	sAgg := Aggregate(sRng)
+	sRng = Aggregate(sRng)
+	sAgg := make([]netip.Prefix, 0, len(sRng))
+	for i := range sRng {
+		sAgg = append(sAgg, sRng[i].Deaggregate()...)
+	}
 
 	if !comparePrefixes(t, sAgg, sPfxOut) {
 		t.FailNow()

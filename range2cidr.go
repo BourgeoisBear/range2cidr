@@ -1,5 +1,24 @@
-// Package range2cidr deaggregates an IP address range into a list of network prefixes (CIDR blocks).
+/*
+Aggregate() merges a list of IP ranges into a minimal set of covering ranges.
 
+Deaggregate() breaks a single IP range into a list of covering network prefixes.
+
+A number of address helper functions are exposed for convenience.
+
+This library usually operates on addresses as [16]byte values, as returned by netip.Addr.As16().
+
+To convert a netip.Addr into [16]byte:
+
+	addr.As16()
+
+To unmap an address back into IPv4 format:
+
+	if addr.Is4In6() {
+		return addr.Unmap()
+	}
+
+The last step is crucial if you want results in v4 format instead of 4in6.
+*/
 package range2cidr
 
 import (
@@ -9,41 +28,10 @@ import (
 	"slices"
 )
 
-type RErr int
-
-const (
-	EIpInvalid RErr = iota
-)
-
-func (e RErr) Error() string {
-	switch e {
-	case EIpInvalid:
-		return "invalid address supplied"
-	}
-	return "unknown error"
-}
-
-/*
-deaggregate an IP address range into the list of network prefixes that cover it.
-
-if:
-
-	v.A = 23.128.1.0
-	v.Z = 23.128.7.255
-
-then Deaggregate(ipLo, ipHi) will return:
-
-	23.128.1.0/24
-	23.128.2.0/23
-	23.128.4.0/22
-*/
+// de-aggregate a range of IP addresses into a list of covering network prefixes.
 func (v Range) Deaggregate() []netip.Prefix {
 	// sort range
-	if Cmp(&v.A, &v.Z) > 0 {
-		C := v.Z
-		v.Z = v.A
-		v.A = C
-	}
+	v.Normalize()
 	return splitIntoPrefixes(v.A, v.Z)
 }
 
@@ -94,14 +82,17 @@ func splitIntoPrefixes(bsIpLo, bsIpHi [16]byte) (RET []netip.Prefix) {
 	return
 }
 
-// aggregate adjacent and contained ranges into a minimal list of network prefixes
-func Aggregate(sR []Range) []netip.Prefix {
+// aggregate (merge) adjacent and contained ranges.
+//
+// NOTE: mutates sR.
+func Aggregate(sR []Range) []Range {
 
-	switch len(sR) {
-	case 0:
-		return nil
-	case 1:
-		return sR[0].Deaggregate()
+	if len(sR) < 2 {
+		return sR
+	}
+
+	for i := range sR {
+		sR[i].Normalize()
 	}
 
 	// .A asc, .Z desc
@@ -139,15 +130,7 @@ func Aggregate(sR []Range) []netip.Prefix {
 		sR[j] = sR[i]
 	}
 
-	// deaggregate ranges
-	ret := make([]netip.Prefix, 0, len(sR))
-	j += 1
-	for i := 0; i < j; i++ {
-		sP := sR[i].Deaggregate()
-		ret = append(ret, sP...)
-	}
-
-	return ret
+	return sR[:j+1]
 }
 
 func V4ToUint32(ipaddr netip.Addr) (uint32, bool) {
@@ -209,25 +192,25 @@ func Add(a, b *[16]byte) (ret [16]byte, carry int) {
 	return ret, carry
 }
 
-// get bitIx-th bit in a.
-func GetBit(a *[16]byte, bitIx uint) bool {
-	byteIx := 15 - int(bitIx>>3)
+// get n-th bit in a.  returns true if set, false if not.
+func GetBit(a *[16]byte, n uint) bool {
+	byteIx := 15 - int(n>>3)
 	if byteIx < 0 {
 		return false
 	}
-	return (a[byteIx] & (1 << (bitIx & 0b111))) != 0
+	return (a[byteIx] & (1 << (n & 0b111))) != 0
 }
 
-// set/clear bitIx-th bit in a.
-func SetBit(a *[16]byte, bitIx uint, bSet bool) {
-	byteIx := 15 - int(bitIx>>3)
+// set/clear n-th bit in a.
+func SetBit(a *[16]byte, n uint, bSet bool) {
+	byteIx := 15 - int(n>>3)
 	if byteIx < 0 {
 		return
 	}
 	if bSet {
-		a[byteIx] |= 1 << (bitIx & 0b111)
+		a[byteIx] |= 1 << (n & 0b111)
 	} else {
-		a[byteIx] &^= 1 << (bitIx & 0b111)
+		a[byteIx] &^= 1 << (n & 0b111)
 	}
 }
 
@@ -235,19 +218,32 @@ type Range struct {
 	A, Z [16]byte
 }
 
-func RangeFromAddrs(first, last netip.Addr) (ret Range) {
+// sort range to ensure that A <= Z.
+func (v *Range) Normalize() {
+	if Cmp(&v.A, &v.Z) > 0 {
+		C := v.Z
+		v.Z = v.A
+		v.A = C
+	}
+}
+
+// convert first, last addresses to a Range struct
+func RangeFromAddrs(first, last netip.Addr) Range {
+	var ret Range
 	ret.A = first.As16()
 	ret.Z = last.As16()
+	ret.Normalize()
 	return ret
 }
 
-// convert network prefix to first/last addrs in network
-func RangeFromPrefix(pfx netip.Prefix) (ret Range) {
+// convert network prefix to a Range struct
+func RangeFromPrefix(pfx netip.Prefix) Range {
+	var ret Range
 	ret.A = pfx.Masked().Addr().As16()
 	ret.Z = ret.A
 	ixEnd := (pfx.Addr().BitLen() - pfx.Bits())
 	for i := 0; i < ixEnd; i += 1 {
 		SetBit(&ret.Z, uint(i), true)
 	}
-	return
+	return ret
 }
