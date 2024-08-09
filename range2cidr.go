@@ -95,13 +95,9 @@ func Aggregate(sR []Range) []Range {
 		sR[i].Normalize()
 	}
 
-	// .A asc, .Z desc
+	// .A asc
 	slices.SortFunc(sR, func(a, b Range) int {
-		ret := Cmp(&a.A, &b.A)
-		if ret == 0 {
-			ret = Cmp(&b.Z, &a.Z)
-		}
-		return ret
+		return Cmp(&a.A, &b.A)
 	})
 
 	var one [16]byte
@@ -109,20 +105,37 @@ func Aggregate(sR []Range) []Range {
 	j := 0
 	for i := 1; i < len(sR); i += 1 {
 
-		// drop fully-contained range
-		cmpA := Cmp(&sR[i].A, &sR[j].A)
-		if (cmpA >= 0) && (Cmp(&sR[i].Z, &sR[j].Z) <= 0) {
-			continue
-		}
+		/*
+			sub-range
+			0123456789
+			A    Z
+			 X Y
 
-		// check for adjacency
-		if cmpA > 0 {
-			nextZ, _ := Add(&sR[j].Z, &one)
-			if Cmp(&sR[i].A, &nextZ) == 0 {
-				// merge adjacent
+			intersection
+			0123456789
+			A    Z
+			  X    Y
+
+			adjacent
+			0123456789
+			A   Z
+			     X  Y
+
+			X in [A,Z+1]: ret [A, max(Y,Z)]
+		*/
+
+		// sub-range & intersection
+		cmpAA := Cmp(&sR[i].A, &sR[j].A)
+		nextZ, _ := Add(&sR[j].Z, &one)
+		cmpAZ := Cmp(&sR[i].A, &nextZ)
+
+		// X in [A,Z]
+		if (cmpAA >= 0) && (cmpAZ <= 0) {
+			// max(Y,Z)
+			if Cmp(&sR[i].Z, &sR[j].Z) > 0 {
 				sR[j].Z = sR[i].Z
-				continue
 			}
+			continue
 		}
 
 		// otherwise append to stack, unchanged
