@@ -3,23 +3,20 @@
 package range2cidr
 
 import (
-	"bytes"
 	"encoding/binary"
 	"math/big"
 	"net/netip"
+	"slices"
 )
 
 type RErr int
 
 const (
-	EIpVersionMismatch RErr = iota
-	EIpInvalid
+	EIpInvalid RErr = iota
 )
 
 func (e RErr) Error() string {
 	switch e {
-	case EIpVersionMismatch:
-		return "IP version mismatch between HI and LO addresses"
 	case EIpInvalid:
 		return "invalid address supplied"
 	}
@@ -27,12 +24,12 @@ func (e RErr) Error() string {
 }
 
 /*
-Returns a list of prefixes (CIDR blocks) that covers the given IP range.
+deaggregate an IP address range into the list of network prefixes that cover it.
 
-For example, if:
+if:
 
-	ipLo = 23.128.1.0
-	ipHi = 23.128.7.255
+	v.A = 23.128.1.0
+	v.Z = 23.128.7.255
 
 then Deaggregate(ipLo, ipHi) will return:
 
@@ -40,65 +37,38 @@ then Deaggregate(ipLo, ipHi) will return:
 	23.128.2.0/23
 	23.128.4.0/22
 */
-func Deaggregate(ipLo, ipHi netip.Addr) ([]netip.Prefix, error) {
-
-	// check valid
-	if !ipLo.IsValid() && !ipHi.IsValid() {
-		return nil, EIpInvalid
+func (v Range) Deaggregate() []netip.Prefix {
+	// sort range
+	if Cmp(&v.A, &v.Z) > 0 {
+		C := v.Z
+		v.Z = v.A
+		v.A = C
 	}
-
-	// handle 4in6
-	if ipLo.Is4In6() {
-		ipLo = ipLo.Unmap()
-	}
-	if ipHi.Is4In6() {
-		ipHi = ipHi.Unmap()
-	}
-
-	// check type
-	if !(ipLo.Is4() && ipHi.Is4()) && !(ipLo.Is6() && ipHi.Is6()) {
-		return nil, EIpVersionMismatch
-	}
-
-	// sort starting range
-	sLo := ipLo.AsSlice()
-	sHi := ipHi.AsSlice()
-	if bytes.Compare(sLo, sHi) == 1 {
-		C := sHi
-		sHi = sLo
-		sLo = C
-	}
-
-	return splitIntoCidrs(sLo, sHi), nil
+	return splitIntoPrefixes(v.A, v.Z)
 }
 
 // Expects ipLo & ipHi to be slices of the same size, where ipLo <= ipHi.
-func splitIntoCidrs(bsIpLo, bsIpHi []byte) (RET []netip.Prefix) {
-
-	NI := big.NewInt
-
-	bigLo := NI(0).SetBytes(bsIpLo)
-	bigHi := NI(0).SetBytes(bsIpHi)
-	nBytes := len(bsIpLo)
-	nBits := nBytes * 8
+func splitIntoPrefixes(bsIpLo, bsIpHi [16]byte) (RET []netip.Prefix) {
 
 	// bigLo <= bigHi
-	for bigLo.Cmp(bigHi) != 1 {
+	for Cmp(&bsIpLo, &bsIpHi) != 1 {
 
-		nStep := 0
-		lowOrderMask := NI(0)
+		nStep := uint(0)
+		var lowOrderMask [16]byte
 
-		for bigLo.Bit(nStep) == 0 {
+		for !GetBit(&bsIpLo, nStep) {
 
 			// grow mask from low order for each nStep
-			lowOrderMask.SetBit(lowOrderMask, nStep, 1)
+			SetBit(&lowOrderMask, nStep, true)
 
 			// OR mask with bigLo address
-			NEXT := NI(0).Set(bigLo)
-			NEXT.Or(NEXT, lowOrderMask)
+			NEXT := bsIpLo
+			for i := range NEXT {
+				NEXT[i] |= lowOrderMask[i]
+			}
 
 			// stop when next > bigHi
-			if NEXT.Cmp(bigHi) == 1 {
+			if Cmp(&NEXT, &bsIpHi) == 1 {
 				break
 			}
 
@@ -107,17 +77,77 @@ func splitIntoCidrs(bsIpLo, bsIpHi []byte) (RET []netip.Prefix) {
 
 		// convert calculated base addr back into a netip.Addr,
 		// re-using low address slice as an intermediary
-		bigLo.FillBytes(bsIpLo)
-		addr, ok := netip.AddrFromSlice(bsIpLo)
-		if ok {
-			prfx := netip.PrefixFrom(addr, nBits-nStep)
-			RET = append(RET, prfx)
+		addr := netip.AddrFrom16(bsIpLo)
+		nMaskBits := (16 * 8) - int(nStep)
+		if addr.Is4In6() {
+			addr = addr.Unmap()
+			nMaskBits -= 96
 		}
+		prfx := netip.PrefixFrom(addr, nMaskBits)
+		RET = append(RET, prfx)
 
-		bigLo.Add(bigLo, NI(0).Lsh(NI(1), uint(nStep)))
+		var tmp [16]byte
+		SetBit(&tmp, nStep, true)
+		bsIpLo, _ = Add(&bsIpLo, &tmp)
 	}
 
 	return
+}
+
+// aggregate adjacent and contained ranges into a minimal list of network prefixes
+func Aggregate(sR []Range) []netip.Prefix {
+
+	switch len(sR) {
+	case 0:
+		return nil
+	case 1:
+		return sR[0].Deaggregate()
+	}
+
+	// .A asc, .Z desc
+	slices.SortFunc(sR, func(a, b Range) int {
+		ret := Cmp(&a.A, &b.A)
+		if ret == 0 {
+			ret = Cmp(&b.Z, &a.Z)
+		}
+		return ret
+	})
+
+	var one [16]byte
+	SetBit(&one, 0, true)
+	j := 0
+	for i := 1; i < len(sR); i += 1 {
+
+		// drop fully-contained range
+		cmpA := Cmp(&sR[i].A, &sR[j].A)
+		if (cmpA >= 0) && (Cmp(&sR[i].Z, &sR[j].Z) <= 0) {
+			continue
+		}
+
+		// check for adjacency
+		if cmpA > 0 {
+			nextZ, _ := Add(&sR[j].Z, &one)
+			if Cmp(&sR[i].A, &nextZ) == 0 {
+				// merge adjacent
+				sR[j].Z = sR[i].Z
+				continue
+			}
+		}
+
+		// otherwise append to stack, unchanged
+		j += 1
+		sR[j] = sR[i]
+	}
+
+	// deaggregate ranges
+	ret := make([]netip.Prefix, 0, len(sR))
+	j += 1
+	for i := 0; i < j; i++ {
+		sP := sR[i].Deaggregate()
+		ret = append(ret, sP...)
+	}
+
+	return ret
 }
 
 func V4ToUint32(ipaddr netip.Addr) (uint32, bool) {
@@ -150,59 +180,74 @@ func ToBig(addr netip.Addr) *big.Int {
 	}
 }
 
-func BigToV6(nBig *big.Int) netip.Addr {
-	if nBig == nil {
-		return netip.Addr{}
-	}
-	var tmp [16]byte
-	nBig.FillBytes(tmp[:])
-	return netip.AddrFrom16(tmp)
-}
-
-func BigToV4(nBig *big.Int) netip.Addr {
-	if nBig == nil {
-		return netip.Addr{}
-	}
-	var tmp [4]byte
-	nBig.FillBytes(tmp[:])
-	return netip.AddrFrom4(tmp)
-}
-
-/*
-func printBits(lbl string, iV interface{}) {
-
-	if len(lbl) > 0 {
-		fmt.Printf("%10s: ", lbl)
-	}
-
-	printByte := func(val []byte) {
-		nBytes := len(val)
-		for ix, b := range val {
-			fmt.Printf("%08b", b)
-			if ix != nBytes-1 {
-				fmt.Print("|")
-			}
+// compare two IPs.
+// the result will be 0 if (a == b), -1 if (a < b), and +1 if (a > b).
+func Cmp(a, b *[16]byte) int {
+	for i := 0; i < 16; i++ {
+		d := int(a[i]) - int(b[i])
+		if d < 0 {
+			return -1
+		} else if d > 0 {
+			return 1
 		}
 	}
-
-	switch val := iV.(type) {
-
-	case net.IPMask:
-		printByte(val)
-
-	case net.IP:
-		printByte(val)
-
-	case []byte:
-		printByte(val)
-
-	case *big.Int:
-		printByte(val.Bytes())
-
-	default:
-		fmt.Printf("%+v", val)
-	}
-
-	fmt.Println("")
+	return 0
 }
-*/
+
+// returns sum of a and b, and carry bit.
+func Add(a, b *[16]byte) (ret [16]byte, carry int) {
+	for i := 15; i >= 0; i-- {
+		v := int(a[i]) + int(b[i]) + carry
+		if v < 256 {
+			ret[i] = byte(v)
+			carry = 0
+		} else {
+			ret[i] = byte(v & 0xFF)
+			carry = 1
+		}
+	}
+	return ret, carry
+}
+
+// get bitIx-th bit in a.
+func GetBit(a *[16]byte, bitIx uint) bool {
+	byteIx := 15 - int(bitIx>>3)
+	if byteIx < 0 {
+		return false
+	}
+	return (a[byteIx] & (1 << (bitIx & 0b111))) != 0
+}
+
+// set/clear bitIx-th bit in a.
+func SetBit(a *[16]byte, bitIx uint, bSet bool) {
+	byteIx := 15 - int(bitIx>>3)
+	if byteIx < 0 {
+		return
+	}
+	if bSet {
+		a[byteIx] |= 1 << (bitIx & 0b111)
+	} else {
+		a[byteIx] &^= 1 << (bitIx & 0b111)
+	}
+}
+
+type Range struct {
+	A, Z [16]byte
+}
+
+func RangeFromAddrs(first, last netip.Addr) (ret Range) {
+	ret.A = first.As16()
+	ret.Z = last.As16()
+	return ret
+}
+
+// convert network prefix to first/last addrs in network
+func RangeFromPrefix(pfx netip.Prefix) (ret Range) {
+	ret.A = pfx.Masked().Addr().As16()
+	ret.Z = ret.A
+	ixEnd := (pfx.Addr().BitLen() - pfx.Bits())
+	for i := 0; i < ixEnd; i += 1 {
+		SetBit(&ret.Z, uint(i), true)
+	}
+	return
+}

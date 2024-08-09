@@ -1,10 +1,12 @@
 package range2cidr
 
 import (
+	"bufio"
 	"fmt"
 	"net/netip"
-	"reflect"
+	"os"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -171,11 +173,106 @@ func expandExpected(t *testing.T, vals []string) []netip.Prefix {
 	return RET
 }
 
+func loadPrefixes(szPath string) ([]netip.Prefix, error) {
+
+	pFile, err := os.Open(szPath)
+	if err != nil {
+		return nil, err
+	}
+	defer pFile.Close()
+
+	sRng := make([]netip.Prefix, 0, 1000)
+	pScan := bufio.NewScanner(pFile)
+	nLine := 0
+	for pScan.Scan() {
+
+		nLine += 1
+		szPfx := strings.TrimSpace(pScan.Text())
+		if len(szPfx) == 0 {
+			continue
+		}
+
+		pfx, err := netip.ParsePrefix(szPfx)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"failed to parse [%s] in '%s' at line %d as prefix: %w",
+				szPfx,
+				szPath,
+				nLine,
+				err)
+		}
+
+		sRng = append(sRng, pfx)
+	}
+	return sRng, nil
+}
+
+func TestAggregate(t *testing.T) {
+
+	var err error
+	defer func() {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	t.Log("IP RANGE AGGREGATION:")
+
+	sPfxIn, err := loadPrefixes("./test_aggregate_in.txt")
+	if err != nil {
+		return
+	}
+
+	sPfxOut, err := loadPrefixes("./test_aggregate_out.txt")
+	if err != nil {
+		return
+	}
+
+	sRng := make([]Range, len(sPfxIn))
+	for i := range sPfxIn {
+		sRng[i] = RangeFromPrefix(sPfxIn[i])
+	}
+	sAgg := Aggregate(sRng)
+
+	if !comparePrefixes(t, sAgg, sPfxOut) {
+		t.FailNow()
+	}
+
+	t.Log("\t", cmsg(true, "SUCCESS!"))
+}
+
+func comparePrefixes(t *testing.T, sA, sB []netip.Prefix) bool {
+
+	limit := len(sA)
+	if len(sB) > limit {
+		limit = len(sB)
+	}
+
+	for i := 0; i < limit; i++ {
+
+		var pfxA, pfxB netip.Prefix
+		if i < len(sA) {
+			pfxA = sA[i]
+		}
+		if i < len(sB) {
+			pfxB = sB[i]
+		}
+		if pfxA == pfxB {
+			t.Log("\t", cmsg(true, "OK"), pfxA.String(), pfxB.String())
+		} else {
+			t.Log("\t", cmsg(false, "MISMATCH"), pfxA.String(), pfxB.String())
+			return false
+		}
+	}
+
+	return true
+}
+
 func TestDeaggregate(t *testing.T) {
 
 	for _, C := range CASES {
 
-		fmt.Print(C.Title + ", " + C.IPLo + " - " + C.IPHi + ": ")
+		t.Log(C.Title + ", " + C.IPLo + " - " + C.IPHi + ":")
 
 		LO, E := netip.ParseAddr(C.IPLo)
 		if E != nil {
@@ -187,48 +284,15 @@ func TestDeaggregate(t *testing.T) {
 			t.Fatal(E)
 		}
 
-		RET, E := Deaggregate(LO, HI)
-		if E != nil {
-			t.Fatal(E)
-		}
-
+		rng := RangeFromAddrs(LO, HI)
+		RET := rng.Deaggregate()
 		EXP := expandExpected(t, C.Expected)
 
-		if reflect.DeepEqual(RET, EXP) {
-
-			for ix := range RET {
-				fmt.Printf("\t%s\n", RET[ix].String())
-			}
-			fmt.Println(cmsg(true, "SUCCESS!"))
-
-		} else {
-
-			t.Log(cmsg(false, "MISMATCH!"))
-
-			le, lr := len(EXP), len(RET)
-			max := le
-			if lr > max {
-				max = lr
-			}
-
-			const SZ_FMT = "%40s %40s\n"
-			t.Logf(SZ_FMT, "EXPECTED", "RETURNED")
-			for i := 0; i < max; i++ {
-
-				var sE, sR string
-
-				if i < le {
-					sE = EXP[i].String()
-				}
-
-				if i < lr {
-					sR = RET[i].String()
-				}
-
-				t.Logf(SZ_FMT, sE, sR)
-			}
+		if !comparePrefixes(t, RET, EXP) {
 			t.FailNow()
 		}
+
+		t.Log("\t", cmsg(true, "SUCCESS!"))
 	}
 }
 
@@ -247,53 +311,30 @@ func TestV4Conv(t *testing.T) {
 		ip[ix] = netip.MustParseAddr(s[ix])
 	}
 
-	fmt.Println("IPv4 Conversions")
+	t.Log("IPv4 CONVERSIONS:")
 	for _, val := range ip {
 
 		n, ok := V4ToUint32(val)
 		val2 := Uint32ToV4(n)
-		fmt.Println("\t", val.String(), n, ok, val2.String())
 
+		stsmsg := cmsg(true, "OK")
+		bFail := false
 		if !ok {
-			t.Log(cmsg(false, "V4ToUint32 Failure"))
-			t.FailNow()
+			stsmsg = cmsg(false, "V4ToUint32 Failure")
+			bFail = true
+		} else if val != val2 {
+			stsmsg = cmsg(false, "V4To/FromUint32 Mismatch")
+			bFail = true
 		}
 
-		if val != val2 {
-			t.Log(cmsg(false, "V4To/FromUint32 Mismatch"))
-			t.FailNow()
-		}
-	}
-	fmt.Println(cmsg(true, "SUCCESS!"))
-}
+		t.Log("\t", stsmsg, val.String(), val2.String())
 
-func TestV6Conv(t *testing.T) {
-
-	s := []string{
-		"2606:cb00::",
-		"2620:0:c70::",
-		"2620:12b:8000::",
-	}
-
-	ip := make([]netip.Addr, len(s))
-
-	for ix := range s {
-		ip[ix] = netip.MustParseAddr(s[ix])
-	}
-
-	fmt.Println("IPv6 Conversions")
-	for _, val := range ip {
-
-		n := ToBig(val)
-		val2 := BigToV6(n)
-		fmt.Println("\t", val.String(), n, val2.String())
-
-		if val != val2 {
-			t.Log(cmsg(false, "V6To/FromBig Mismatch"))
+		if bFail {
 			t.FailNow()
 		}
 	}
-	fmt.Println(cmsg(true, "SUCCESS!"))
+
+	t.Log("\t", cmsg(true, "SUCCESS!"))
 }
 
 func cmsg(bOk bool, v string) string {
