@@ -16,8 +16,6 @@ To unmap an address back into IPv4 format:
 	if addr.Is4In6() {
 		return addr.Unmap()
 	}
-
-The last step is crucial if you want results in v4 format instead of 4in6.
 */
 package range2cidr
 
