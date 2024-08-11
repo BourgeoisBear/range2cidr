@@ -23,5 +23,3 @@ if addr.Is4In6() {
 	return addr.Unmap()
 }
 ```
-
-The last step is crucial if you want results in v4 format instead of 4in6.
